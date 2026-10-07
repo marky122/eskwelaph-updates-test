@@ -1,0 +1,81 @@
+name: Transfer validated TEST release
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Validated 9.x TEST version
+        required: true
+        type: string
+      release_id:
+        description: Existing TEST draft release ID
+        required: true
+        type: string
+      source_base:
+        description: Temporary allowlisted asset transfer URL
+        required: true
+        type: string
+      plan_sha256:
+        description: SHA-256 of the exact validated transfer index
+        required: true
+        type: string
+permissions:
+  contents: write
+concurrency:
+  group: controlled-test-transfer
+  cancel-in-progress: false
+jobs:
+  transfer:
+    if: github.repository == 'marky122/eskwelaph-updates-test'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TEST_VERSION: ${{ inputs.version }}
+      TEST_RELEASE_ID: ${{ inputs.release_id }}
+      SOURCE_BASE: ${{ inputs.source_base }}
+      PLAN_SHA256: ${{ inputs.plan_sha256 }}
+    steps:
+      - name: Verify, transfer and publish isolated TEST draft
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import os,re,json,hashlib,urllib.request,subprocess,tempfile
+          repository='marky122/eskwelaph-updates-test'
+          assert os.environ['GITHUB_REPOSITORY']==repository
+          version=os.environ['TEST_VERSION'];rid=os.environ['TEST_RELEASE_ID'];base=os.environ['SOURCE_BASE'].rstrip('/')
+          assert re.fullmatch(r'9\.\d+\.\d+',version) and re.fullmatch(r'\d+',rid)
+          assert re.fullmatch(r'https://[a-z-]+\.trycloudflare\.com',base)
+          expected_plan=os.environ['PLAN_SHA256'];assert re.fullmatch(r'[a-f0-9]{64}',expected_plan)
+          def gh(*args): return subprocess.check_output(['gh',*args],text=True)
+          def release(): return json.loads(gh('api',f'repos/{repository}/releases/{rid}'))
+          initial=release();assert initial['draft'] and initial['prerelease'] and initial['tag_name']=='v'+version
+          with urllib.request.urlopen(base+'/asset-index.json',timeout=60) as response: raw=response.read(1024*1024+1)
+          assert len(raw)<=1024*1024 and hashlib.sha256(raw).hexdigest()==expected_plan
+          plan=json.loads(raw);assert plan['repository']==repository
+          items=[item for item in plan['assets'] if item['version']==version]
+          names={f'Eskwela-PH-Setup-{version}.exe',f'Eskwela-PH-Setup-{version}.exe.blockmap','latest.yml','latest-mac.yml'}
+          for arch in ['x64','arm64']:
+            for ext in ['dmg','zip','zip.blockmap']: names.add(f'EskwelaPH-{version}-mac-{arch}.{ext}')
+          for os_name,arch in [('windows','x64'),('mac','x64'),('mac','arm64')]:
+            names.add(f'backend-manifest-{os_name}-{arch}-{version}.json');names.add(f'backend-blobs-{os_name}-{arch}-{version}.zip')
+          assert len(items)==16 and {item['name'] for item in items}==names
+          assert all(type(item['bytes']) is int and 0<item['bytes']<2*1024**3 and re.fullmatch(r'[a-f0-9]{64}',item['sha256']) for item in items)
+          assert sum(item['bytes'] for item in items)<6*1024**3
+          for item in items:
+            path=os.path.join(tempfile.gettempdir(),item['name']);digest=hashlib.sha256();size=0
+            with urllib.request.urlopen(base+'/'+version+'/'+item['name'],timeout=120) as response,open(path,'wb') as out:
+              while True:
+                chunk=response.read(1024*1024)
+                if not chunk: break
+                size+=len(chunk);assert size<=item['bytes'];digest.update(chunk);out.write(chunk)
+            assert size==item['bytes'] and digest.hexdigest()==item['sha256']
+            current=release();assert current['draft'] and current['prerelease'] and current['tag_name']=='v'+version
+            gh('release','upload','v'+version,path,'--repo',repository,'--clobber')
+            os.remove(path);print('Verified and uploaded:',item['name'],size,flush=True)
+          assets={item['name']:item for item in release()['assets']};assert set(assets)==names
+          for item in items:
+            actual=assets[item['name']];assert actual['state']=='uploaded' and actual['size']==item['bytes'] and actual['digest']=='sha256:'+item['sha256']
+          gh('release','edit','v'+version,'--repo',repository,'--draft=false','--prerelease','--latest=false')
+          final=release();assert not final['draft'] and final['prerelease'] and final['tag_name']=='v'+version
+          print('Published controlled TEST release:',final['html_url'],flush=True)
+          PY
