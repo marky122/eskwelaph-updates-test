@@ -40,16 +40,19 @@ jobs:
         run: |
           python3 - <<'PY'
           import os,re,json,hashlib,urllib.request,subprocess,tempfile
+          def fetch(url,timeout):
+            req=urllib.request.Request(url,headers={'User-Agent':'EskwelaPH-TEST-transfer/1','Bypass-Tunnel-Reminder':'1'})
+            return urllib.request.urlopen(req,timeout=timeout)
           repository='marky122/eskwelaph-updates-test'
           assert os.environ['GITHUB_REPOSITORY']==repository
           version=os.environ['TEST_VERSION'];rid=os.environ['TEST_RELEASE_ID'];base=os.environ['SOURCE_BASE'].rstrip('/')
           assert re.fullmatch(r'9\.\d+\.\d+',version) and re.fullmatch(r'\d+',rid)
-          assert re.fullmatch(r'https://[a-z-]+\.trycloudflare\.com',base)
+          assert re.fullmatch(r'https://(?:[a-z-]+\.trycloudflare\.com|[a-z0-9-]+\.loca\.lt|[a-z0-9-]+\.localtunnel\.me)',base)
           expected_plan=os.environ['PLAN_SHA256'];assert re.fullmatch(r'[a-f0-9]{64}',expected_plan)
           def gh(*args): return subprocess.check_output(['gh',*args],text=True)
           def release(): return json.loads(gh('api',f'repos/{repository}/releases/{rid}'))
           initial=release();assert initial['draft'] and initial['prerelease'] and initial['tag_name']=='v'+version
-          with urllib.request.urlopen(base+'/asset-index.json',timeout=60) as response: raw=response.read(1024*1024+1)
+          with fetch(base+'/asset-index.json',60) as response: raw=response.read(1024*1024+1)
           assert len(raw)<=1024*1024 and hashlib.sha256(raw).hexdigest()==expected_plan
           plan=json.loads(raw);assert plan['repository']==repository
           items=[item for item in plan['assets'] if item['version']==version]
@@ -63,7 +66,7 @@ jobs:
           assert sum(item['bytes'] for item in items)<6*1024**3
           for item in items:
             path=os.path.join(tempfile.gettempdir(),item['name']);digest=hashlib.sha256();size=0
-            with urllib.request.urlopen(base+'/'+version+'/'+item['name'],timeout=120) as response,open(path,'wb') as out:
+            with fetch(base+'/'+version+'/'+item['name'],120) as response,open(path,'wb') as out:
               while True:
                 chunk=response.read(1024*1024)
                 if not chunk: break
