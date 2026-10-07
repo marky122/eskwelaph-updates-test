@@ -42,7 +42,11 @@ jobs:
           import os,re,json,hashlib,urllib.request,subprocess,tempfile,time
           def fetch(url,timeout):
             req=urllib.request.Request(url,headers={'User-Agent':'EskwelaPH-TEST-transfer/1','Bypass-Tunnel-Reminder':'1'})
-            return urllib.request.urlopen(req,timeout=timeout)
+            for attempt in range(5):
+              try: return urllib.request.urlopen(req,timeout=timeout)
+              except (urllib.error.URLError,TimeoutError):
+                if attempt==4: raise
+                time.sleep(5)
           repository='marky122/eskwelaph-updates-test'
           assert os.environ['GITHUB_REPOSITORY']==repository
           version=os.environ['TEST_VERSION'];rid=os.environ['TEST_RELEASE_ID'];base=os.environ['SOURCE_BASE'].rstrip('/')
